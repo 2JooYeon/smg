@@ -483,7 +483,7 @@ impl CacheAwarePolicy {
         // Use shortest queue when imbalanced
         let min_load_idx = healthy_indices
             .iter()
-            .min_by_key(|&&idx| workers[idx].load())
+            .min_by_key(|&&idx| (workers[idx].load(), workers[idx].processed_requests(), idx))
             .copied()?;
 
         let worker_url = workers[min_load_idx].url();
@@ -868,7 +868,7 @@ impl CacheAwarePolicy {
         // No cache overlap — min-load fallback (no token tree involved)
         let min_idx = healthy_indices
             .iter()
-            .min_by_key(|&&idx| workers[idx].load())
+            .min_by_key(|&&idx| (workers[idx].load(), workers[idx].processed_requests(), idx))
             .copied()?;
         debug!(
             worker = workers[min_idx].url(),
@@ -982,7 +982,9 @@ impl CacheAwarePolicy {
                 } else {
                     healthy_indices
                         .iter()
-                        .min_by_key(|&&idx| workers[idx].load())
+                        .min_by_key(|&&idx| {
+                            (workers[idx].load(), workers[idx].processed_requests(), idx)
+                        })
                         .copied()
                 };
 
@@ -1064,7 +1066,9 @@ impl CacheAwarePolicy {
                 } else {
                     healthy_indices
                         .iter()
-                        .min_by_key(|&&idx| workers[idx].load())
+                        .min_by_key(|&&idx| {
+                            (workers[idx].load(), workers[idx].processed_requests(), idx)
+                        })
                         .copied()
                 };
 
@@ -2276,24 +2280,28 @@ mod tests {
         // Empty indexer → has_event_indexer returns false → falls through to token tree
         assert!(!policy.has_event_indexer("unknown"));
 
-        // Route a request — should use token tree, not event-driven min-load
+        // Tokens must be >= PAGE_SIZE (16) to populate the tree; shorter
+        // sequences are uncacheable and fall through to min-load.
+        let tokens: Vec<u32> = (1..=16).collect();
+
+        // First request populates the token tree for the selected worker.
         let idx = policy
             .select_worker(
                 &workers,
                 &SelectWorkerInfo {
-                    tokens: Some(&[1, 2, 3, 4]),
+                    tokens: Some(&tokens),
                     ..Default::default()
                 },
             )
             .unwrap();
         assert!(idx < 2); // valid worker via token tree
 
-        // Route the same tokens again — token tree should route to same worker (cache hit)
+        // Same tokens again — token-tree cache hit routes to the same worker.
         let idx2 = policy
             .select_worker(
                 &workers,
                 &SelectWorkerInfo {
-                    tokens: Some(&[1, 2, 3, 4]),
+                    tokens: Some(&tokens),
                     ..Default::default()
                 },
             )
